@@ -14,12 +14,13 @@ VIRALITY_PILLARS = """
 5. THE ALGORITHM (Session Time): 4-6 min optimal, comment velocity, subs/view ratio. Measured by subscriber gain.
 """
 
-def get_pipeline_context():
-    """Step 1: Sync analytics + build context. Returns JSON string."""
+def run_analytics_report():
+    """Step -1: Generate deep analytics report. Prints report JSON."""
     from database import init_db
     from youtube_analytics import sync_all_analytics
     from performance_analyzer import generate_insights
-    from feedback_loop import build_pipeline_context, update_claude_md_insights
+    from feedback_loop import update_claude_md_insights
+    from analytics_reporter import generate_deep_analytics_report
 
     init_db()
     try:
@@ -29,7 +30,22 @@ def get_pipeline_context():
     except Exception as e:
         print(f"Analytics sync failed (non-fatal): {e}")
 
+    report = generate_deep_analytics_report()
+    print(json.dumps(report, indent=2, default=str))
+    return report
+
+
+def get_pipeline_context():
+    """Step 1: Build full context (analytics + virality + performance). Returns JSON string."""
+    from database import init_db
+    from feedback_loop import build_pipeline_context
+    from analytics_reporter import load_analytics_report
+    from virality_research import load_virality_brief
+
+    init_db()
     context = build_pipeline_context()
+    context["analytics_report"] = load_analytics_report()
+    context["virality_brief"] = load_virality_brief()
     print(json.dumps(context, indent=2, default=str))
     return context
 

@@ -216,6 +216,10 @@ def build_script_agent_prompt(context, topic):
     # Virality pillars + latest brief
     virality_context = get_virality_context_for_agents()
 
+    # Analytics report (what works/doesn't from past videos)
+    from analytics_reporter import get_analytics_context_for_agents
+    analytics_context = get_analytics_context_for_agents()
+
     # Pillar score averages for the script-writer
     pillar_section = ""
     pillar_avgs = context.get("pillar_averages")
@@ -241,6 +245,8 @@ def build_script_agent_prompt(context, topic):
 {claude_md}
 
 {virality_context}
+
+{analytics_context}
 
 ## PERFORMANCE-BASED PREFERENCES
 {chr(10).join(perf_lines)}
