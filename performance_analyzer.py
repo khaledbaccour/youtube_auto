@@ -1,5 +1,6 @@
 """Performance analysis engine — scores videos, generates insights, manages A/B tests."""
 
+import os
 import statistics
 
 from database import (
@@ -8,6 +9,17 @@ from database import (
     insert_score,
     update_topic_performance,
 )
+
+# ---------------------------------------------------------------------------
+# The 5 Virality Pillars
+# ---------------------------------------------------------------------------
+VIRALITY_PILLARS = """
+1. THE HOOK (First 5s) — 30s retention. Does the opening grab attention immediately?
+2. THE CLICK (Title+Thumbnail) — CTR. Does the packaging compel clicks from impressions?
+3. THE RETENTION (Keep Watching) — avg view duration / total duration. Do viewers stay?
+4. THE ENGAGEMENT (Comments+Shares) — (comments+likes)/views. Does content spark action?
+5. THE ALGORITHM (Session Time) — subs_gained/views. Does YouTube's system push it?
+"""
 
 # ---------------------------------------------------------------------------
 # Benchmarks (module-level, updatable)
@@ -56,15 +68,153 @@ def _linear_score(value, good, great):
 # Core functions
 # ---------------------------------------------------------------------------
 
+def _compute_title_score(title):
+    """Heuristic title quality score (0-100)."""
+    score = 0
+    title_len = len(title)
+    if 40 <= title_len <= 60:
+        score += 30
+    elif 30 <= title_len < 40 or 60 < title_len <= 70:
+        score += 15
+    if any(c.isdigit() for c in title):
+        score += 20
+    power_words = [
+        "just", "breaking", "killed", "leaked", "secret", "finally",
+        "biggest", "worst", "best", "new", "why", "how", "dead", "free",
+    ]
+    if any(w in title.lower() for w in power_words):
+        score += 25
+    if "?" in title:
+        score += 15
+    if title != title.upper():
+        score += 10
+    return _clamp(score)
+
+
+def _compute_thumbnail_score(video_id):
+    """Heuristic thumbnail quality score (0-100)."""
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT thumbnail_path FROM videos WHERE id = ?", (video_id,)
+    ).fetchone()
+    conn.close()
+    path = row[0] if row and row[0] else None
+    if not path or not os.path.exists(path):
+        return 0
+    score = 30  # exists
+    size = os.path.getsize(path)
+    if size > 100 * 1024:
+        score += 20
+    try:
+        from PIL import Image
+        img = Image.open(path)
+        w, h = img.size
+        if w >= 1280 and h >= 720:
+            score += 25
+        # Check if mostly white
+        if img.mode in ("RGB", "RGBA"):
+            pixels = list(img.getdata())
+            sample = pixels[::max(1, len(pixels) // 500)]
+            white_count = sum(1 for p in sample if all(c > 240 for c in p[:3]))
+            if white_count / max(len(sample), 1) < 0.5:
+                score += 25
+    except Exception:
+        pass
+    return _clamp(score)
+
+
+def _compute_description_score(video_id):
+    """Heuristic description quality score (0-100)."""
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT description FROM videos WHERE id = ?", (video_id,)
+    ).fetchone()
+    conn.close()
+    desc = (row[0] or "") if row else ""
+    score = 0
+    if len(desc) > 200:
+        score += 30
+    elif len(desc) > 100:
+        score += 15
+    if "00:" in desc or "timestamp" in desc.lower():
+        score += 25
+    keywords = ["ai", "model", "gpt", "claude", "google", "openai", "release", "update"]
+    if any(k in desc.lower() for k in keywords):
+        score += 25
+    if "http" in desc:
+        score += 20
+    return _clamp(score)
+
+
+def _compute_image_quality_score(video_id):
+    """Heuristic image quality score based on cached images (0-100)."""
+    images_dir = os.path.join("output", "images")
+    if not os.path.isdir(images_dir):
+        return 0
+    files = [f for f in os.listdir(images_dir) if f.lower().endswith((".png", ".jpg", ".jpeg", ".webp"))]
+    if not files:
+        return 0
+    score = 0
+    sizes = []
+    for f in files:
+        path = os.path.join(images_dir, f)
+        sizes.append(os.path.getsize(path))
+    avg_size = sum(sizes) / len(sizes)
+    if avg_size > 100 * 1024:
+        score += 25
+    try:
+        from PIL import Image
+        all_large = True
+        for f in files[:20]:  # sample up to 20
+            img = Image.open(os.path.join(images_dir, f))
+            if img.size[0] < 800 or img.size[1] < 600:
+                all_large = False
+                break
+        if all_large:
+            score += 25
+    except Exception:
+        pass
+    # No watermark detection heuristic — assume clean if images passed QA
+    score += 25
+    # Variety of sources — check unique file sizes as proxy
+    if len(set(s // 1024 for s in sizes)) >= min(len(sizes), 3):
+        score += 25
+    return _clamp(score)
+
+
+def _compute_topic_score(video_id):
+    """Score based on historical performance of this video's topic category (0-100)."""
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT topic_category FROM videos WHERE id = ?", (video_id,)
+    ).fetchone()
+    if not row or not row[0]:
+        conn.close()
+        return 50  # neutral
+    category = row[0]
+    # Get all categories ranked by avg_views
+    rows = conn.execute(
+        "SELECT topic_category, avg_views FROM topic_performance ORDER BY avg_views DESC"
+    ).fetchall()
+    conn.close()
+    if not rows:
+        return 50
+    for i, r in enumerate(rows):
+        if r[0] == category:
+            # Rank-based score: top = 100, bottom = 0
+            return _clamp(int(100 * (1 - i / max(len(rows) - 1, 1))))
+    return 50
+
+
 def score_video(video_id):
-    """Compute and store performance scores (0-100) for a video."""
+    """Compute and store pillar-based performance scores (0-100) for a video."""
     conn = get_connection()
     cur = conn.cursor()
 
     # Fetch latest analytics row for this video
     cur.execute(
         "SELECT views, avg_view_duration_seconds, ctr, likes, comments, "
-        "retention_30s, retention_60s, retention_end, impressions "
+        "retention_30s, retention_60s, retention_end, impressions, subs_gained "
         "FROM analytics WHERE video_id = ? ORDER BY date DESC LIMIT 1",
         (video_id,),
     )
@@ -73,86 +223,128 @@ def score_video(video_id):
         conn.close()
         return None
 
-    views, avg_dur, ctr, likes, comments, ret_30, ret_60, ret_end, impressions = row
+    views, avg_dur, ctr, likes, comments, ret_30, ret_60, ret_end, impressions, subs_gained = row
+    views = views or 0
+    likes = likes or 0
+    comments = comments or 0
+    subs_gained = subs_gained or 0
 
-    # Hook score — based on 30s retention
-    hook_score = _clamp(int(_linear_score(
-        ret_30 or 0,
-        BENCHMARKS["retention_30s_good"],
-        BENCHMARKS["retention_30s_great"],
-    )))
+    # Fetch video metadata for title
+    cur.execute("SELECT title FROM videos WHERE id = ?", (video_id,))
+    vid_row = cur.fetchone()
+    title = vid_row[0] if vid_row else ""
 
-    # Content score — avg view duration + comment engagement ratio
-    dur_score = _linear_score(avg_dur or 0, BENCHMARKS["avg_duration_good"], BENCHMARKS["avg_duration_good"] * 2)
-    comment_ratio = (comments or 0) / max(views, 1)
-    engagement_score = min(100, comment_ratio * 2000)  # 5% comment rate -> 100
-    content_score = _clamp(int(0.7 * dur_score + 0.3 * engagement_score))
+    # Fetch total video duration from video metadata (estimate from avg_dur if unavailable)
+    # Use retention_end as a proxy: if someone watches 40% on average and avg_dur=120s, total ~300s
+    total_duration = (avg_dur / ret_end) if (avg_dur and ret_end and ret_end > 0) else (avg_dur or 300)
 
-    # Visual score — retention variance (smooth curve = good)
+    # -----------------------------------------------------------------------
+    # Pillar 1: Hook (from analytics — 30s retention)
+    # -----------------------------------------------------------------------
+    hook_pillar = 0
+    retention_30s = ret_30
+    if retention_30s is not None:
+        if retention_30s >= 0.75:
+            hook_pillar = 100
+        elif retention_30s >= 0.60:
+            hook_pillar = 70
+        else:
+            hook_pillar = max(0, retention_30s / 0.60 * 70)
+
+    # -----------------------------------------------------------------------
+    # Pillar 2: Click (from analytics — CTR)
+    # -----------------------------------------------------------------------
+    click_pillar = 0
+    ctr_val = ctr or 0
+    if ctr_val >= 0.08:
+        click_pillar = 100
+    elif ctr_val >= 0.04:
+        click_pillar = 70
+    else:
+        click_pillar = max(0, ctr_val / 0.04 * 70)
+
+    # -----------------------------------------------------------------------
+    # Pillar 3: Retention (from analytics — avg duration / total duration)
+    # -----------------------------------------------------------------------
+    retention_pillar = 0
+    if avg_dur and total_duration:
+        ratio = avg_dur / total_duration
+        if ratio >= 0.60:
+            retention_pillar = 100
+        elif ratio >= 0.40:
+            retention_pillar = 70
+        else:
+            retention_pillar = max(0, ratio / 0.40 * 70)
+
+    # -----------------------------------------------------------------------
+    # Pillar 4: Engagement (from analytics — (comments+likes)/views)
+    # -----------------------------------------------------------------------
+    engagement_pillar = 0
+    if views > 0:
+        eng_ratio = (comments + likes) / views
+        if eng_ratio >= 0.05:
+            engagement_pillar = 100
+        elif eng_ratio >= 0.02:
+            engagement_pillar = 70
+        else:
+            engagement_pillar = max(0, eng_ratio / 0.02 * 70)
+
+    # -----------------------------------------------------------------------
+    # Pillar 5: Algorithm (from analytics — subs_gained/views)
+    # -----------------------------------------------------------------------
+    algorithm_pillar = 0
+    if views > 0:
+        sub_ratio = subs_gained / views
+        if sub_ratio >= 0.01:
+            algorithm_pillar = 100
+        elif sub_ratio >= 0.005:
+            algorithm_pillar = 70
+        else:
+            algorithm_pillar = max(0, sub_ratio / 0.005 * 70)
+
+    # -----------------------------------------------------------------------
+    # Sub-scores (heuristic, from video metadata)
+    # -----------------------------------------------------------------------
+    title_score = _compute_title_score(title)
+    thumbnail_score = _compute_thumbnail_score(video_id)
+    description_score = _compute_description_score(video_id)
+    image_quality_score = _compute_image_quality_score(video_id)
+    topic_score = _compute_topic_score(video_id)
+    workflow_score = 50  # default — updated by pipeline if validation/QA data available
+
+    # -----------------------------------------------------------------------
+    # Legacy scores (kept for backwards compat)
+    # -----------------------------------------------------------------------
+    hook_score = _clamp(int(hook_pillar))
+    content_score = _clamp(int(0.5 * retention_pillar + 0.5 * engagement_pillar))
+    visual_score = 50
     retention_points = [v for v in [ret_30, ret_60, ret_end] if v is not None]
     if len(retention_points) >= 2:
         variance = statistics.variance(retention_points)
-        # Low variance = smooth = good. Variance > 0.05 is choppy
         visual_score = _clamp(int(100 - variance * 1000))
-    else:
-        visual_score = 50
+    retention_score = _clamp(int(retention_pillar))
+    virality_score = _clamp(int(
+        0.25 * hook_pillar + 0.25 * click_pillar + 0.20 * retention_pillar
+        + 0.15 * engagement_pillar + 0.15 * algorithm_pillar
+    ))
 
-    # Retention score — end retention vs benchmark
-    retention_score = _clamp(int(_linear_score(
-        ret_end or 0,
-        0.30,  # 30% end retention is decent
-        0.50,  # 50% end retention is excellent
-    )))
-
-    # Virality score — composite of CTR, hook, engagement, growth (0-100)
-    # CTR component (0-25)
-    ctr_val = ctr or 0
-    if ctr_val >= BENCHMARKS["ctr_great"]:
-        ctr_component = 25
-    elif ctr_val >= BENCHMARKS["ctr_good"]:
-        ctr_component = 15
-    else:
-        ctr_component = int(25 * ctr_val / max(BENCHMARKS["ctr_good"], 0.001))
-
-    # Hook component (0-25)
-    ret_30_val = ret_30 or 0
-    if ret_30_val >= BENCHMARKS["retention_30s_great"]:
-        hook_component = 25
-    elif ret_30_val >= BENCHMARKS["retention_30s_good"]:
-        hook_component = 15
-    else:
-        hook_component = int(25 * ret_30_val / max(BENCHMARKS["retention_30s_good"], 0.001))
-
-    # Engagement component (0-25) — (comments + likes) / views
-    engagement_ratio = ((comments or 0) + (likes or 0)) / max(views, 1)
-    engagement_component = _clamp(int(engagement_ratio * 500), 0, 25)  # 5% ratio -> 25
-
-    # Growth component (0-25) — subs_gained / views
-    cur.execute(
-        "SELECT subs_gained FROM analytics WHERE video_id = ? ORDER BY date DESC LIMIT 1",
-        (video_id,),
-    )
-    subs_row = cur.fetchone()
-    subs_gained = (subs_row[0] or 0) if subs_row else 0
-    growth_ratio = subs_gained / max(views, 1)
-    growth_component = _clamp(int(growth_ratio * 2500), 0, 25)  # 1% ratio -> 25
-
-    virality_score = _clamp(
-        ctr_component + hook_component + engagement_component + growth_component, 0, 100
-    )
-
-    # Overall — weighted average (hook 25%, content 25%, visual 10%, retention 20%, virality 20%)
+    # -----------------------------------------------------------------------
+    # Overall score (pillar-weighted)
+    # -----------------------------------------------------------------------
     overall_score = _clamp(int(
-        0.25 * hook_score
-        + 0.25 * content_score
-        + 0.10 * visual_score
-        + 0.20 * retention_score
-        + 0.20 * virality_score
+        hook_pillar * 0.25
+        + click_pillar * 0.25
+        + retention_pillar * 0.20
+        + engagement_pillar * 0.15
+        + algorithm_pillar * 0.15
     ))
 
     notes = (
-        f"views={views}, ctr={ctr}, avg_dur={avg_dur}s, "
-        f"ret_30={ret_30}, ret_end={ret_end}, subs={subs_gained}"
+        f"views={views}, ctr={ctr_val}, avg_dur={avg_dur}s, "
+        f"ret_30={ret_30}, ret_end={ret_end}, subs={subs_gained}, "
+        f"pillars: hook={hook_pillar:.0f} click={click_pillar:.0f} "
+        f"retention={retention_pillar:.0f} engagement={engagement_pillar:.0f} "
+        f"algorithm={algorithm_pillar:.0f}"
     )
 
     scores_dict = {
@@ -162,6 +354,17 @@ def score_video(video_id):
         "retention_score": retention_score,
         "virality_score": virality_score,
         "overall_score": overall_score,
+        "hook_pillar_score": _clamp(int(hook_pillar)),
+        "click_pillar_score": _clamp(int(click_pillar)),
+        "retention_pillar_score": _clamp(int(retention_pillar)),
+        "engagement_pillar_score": _clamp(int(engagement_pillar)),
+        "algorithm_pillar_score": _clamp(int(algorithm_pillar)),
+        "thumbnail_score": thumbnail_score,
+        "title_score": title_score,
+        "description_score": description_score,
+        "image_quality_score": image_quality_score,
+        "topic_score": topic_score,
+        "workflow_score": workflow_score,
         "notes": notes,
     }
     insert_score(video_id, scores_dict)
@@ -404,6 +607,30 @@ def generate_insights():
                 confidence = min(1.0, (top["sample_size"] + bottom["sample_size"]) / 12)
                 insert_insight(text, "virality_analysis", round(confidence, 2), "factor_gap")
                 insights.append(text)
+
+    # Pillar-based insights — identify weakest pillar across recent videos
+    conn = get_connection()
+    pillar_rows = conn.execute(
+        "SELECT AVG(hook_pillar_score), AVG(click_pillar_score), AVG(retention_pillar_score), "
+        "AVG(engagement_pillar_score), AVG(algorithm_pillar_score) "
+        "FROM scores WHERE hook_pillar_score IS NOT NULL "
+        "ORDER BY scored_at DESC LIMIT 10"
+    ).fetchone()
+    conn.close()
+    if pillar_rows and pillar_rows[0] is not None:
+        pillar_names = ["Hook", "Click", "Retention", "Engagement", "Algorithm"]
+        pillar_avgs = list(pillar_rows)
+        weakest_idx = pillar_avgs.index(min(pillar_avgs))
+        strongest_idx = pillar_avgs.index(max(pillar_avgs))
+        if pillar_avgs[strongest_idx] - pillar_avgs[weakest_idx] >= 15:
+            text = (
+                f"Weakest pillar: {pillar_names[weakest_idx]} "
+                f"(avg {pillar_avgs[weakest_idx]:.0f}) vs strongest: "
+                f"{pillar_names[strongest_idx]} (avg {pillar_avgs[strongest_idx]:.0f}) — "
+                f"focus improvement on {pillar_names[weakest_idx]}"
+            )
+            insert_insight(text, "pillar_analysis", 0.7, "pillar_comparison")
+            insights.append(text)
 
     # A/B test insights
     ab_winners = identify_ab_test_winners()

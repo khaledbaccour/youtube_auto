@@ -176,15 +176,36 @@ def _create_tray_icon():
 # ---------------------------------------------------------------------------
 
 def _run_pipeline_safe(state):
-    """Import and run the pipeline, catching errors."""
+    """Run the video generation pipeline with error handling."""
     try:
-        from main import run_pipeline
-        run_pipeline()
-    except Exception:
+        from run_pipeline_agents import (
+            get_pipeline_context,
+            run_tts,
+            run_frames_and_assembly,
+            run_qa_review,
+            store_and_email,
+        )
+
+        # Step 1: Analytics + context
+        context = get_pipeline_context()
+
+        # Step 4: TTS (script must exist from agent team)
+        tts_result = run_tts()
+
+        # Step 7: Frames + assembly
+        assembly_result = run_frames_and_assembly()
+
+        # Step 8: QA
+        qa_report = run_qa_review()
+
+        # Step 9: Store + email
+        store_and_email(qa_report)
+
+    except Exception as e:
         tb_str = traceback.format_exc()
         print(f"[scheduler] Pipeline error:\n{tb_str}")
         try:
-            send_error_alert("Pipeline Failure", str(tb_str.splitlines()[-1]), tb_str)
+            send_error_alert(type(e).__name__, str(e), tb_str)
         except Exception:
             pass
 

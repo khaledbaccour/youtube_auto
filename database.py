@@ -23,6 +23,17 @@ def _migrate_db():
         ("videos", "tags", "TEXT"),
         ("videos", "thumbnail_path", "TEXT"),
         ("scores", "virality_score", "REAL"),
+        ("scores", "hook_pillar_score", "REAL"),
+        ("scores", "click_pillar_score", "REAL"),
+        ("scores", "retention_pillar_score", "REAL"),
+        ("scores", "engagement_pillar_score", "REAL"),
+        ("scores", "algorithm_pillar_score", "REAL"),
+        ("scores", "thumbnail_score", "REAL"),
+        ("scores", "title_score", "REAL"),
+        ("scores", "description_score", "REAL"),
+        ("scores", "image_quality_score", "REAL"),
+        ("scores", "topic_score", "REAL"),
+        ("scores", "workflow_score", "REAL"),
     ]
     for table, column, col_type in migrations:
         try:
@@ -84,6 +95,17 @@ def init_db():
             retention_score REAL,
             overall_score REAL,
             virality_score REAL,
+            hook_pillar_score REAL,
+            click_pillar_score REAL,
+            retention_pillar_score REAL,
+            engagement_pillar_score REAL,
+            algorithm_pillar_score REAL,
+            thumbnail_score REAL,
+            title_score REAL,
+            description_score REAL,
+            image_quality_score REAL,
+            topic_score REAL,
+            workflow_score REAL,
             notes TEXT,
             scored_at TEXT DEFAULT (datetime('now'))
         );
@@ -216,21 +238,23 @@ def insert_analytics(video_id, date, metrics_dict):
 # ---------------------------------------------------------------------------
 
 def insert_score(video_id, scores_dict):
+    cols = [
+        "hook_score", "content_score", "visual_score", "retention_score",
+        "overall_score", "virality_score",
+        "hook_pillar_score", "click_pillar_score", "retention_pillar_score",
+        "engagement_pillar_score", "algorithm_pillar_score",
+        "thumbnail_score", "title_score", "description_score",
+        "image_quality_score", "topic_score", "workflow_score",
+        "notes",
+    ]
+    values = [scores_dict.get(c) for c in cols]
+    col_names = ", ".join(cols)
+    placeholders = ", ".join(["?"] * (1 + len(cols)))
+
     conn = get_connection()
     conn.execute(
-        """INSERT INTO scores (video_id, hook_score, content_score, visual_score,
-           retention_score, overall_score, virality_score, notes)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        (
-            video_id,
-            scores_dict.get("hook_score"),
-            scores_dict.get("content_score"),
-            scores_dict.get("visual_score"),
-            scores_dict.get("retention_score"),
-            scores_dict.get("overall_score"),
-            scores_dict.get("virality_score"),
-            scores_dict.get("notes"),
-        ),
+        f"INSERT INTO scores (video_id, {col_names}) VALUES ({placeholders})",
+        [video_id] + values,
     )
     conn.commit()
     conn.close()

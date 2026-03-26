@@ -5,9 +5,11 @@ from datetime import datetime
 
 from config import BASE_DIR
 from database import (
+    get_connection,
     get_recent_videos,
     get_top_performing_topics,
     get_unapplied_insights,
+    insert_insight,
     mark_insight_applied,
 )
 from performance_analyzer import generate_insights, get_next_ab_test_variable
@@ -15,10 +17,18 @@ from performance_analyzer import generate_insights, get_next_ab_test_variable
 CLAUDE_MD_PATH = os.path.join(BASE_DIR, "CLAUDE.md")
 INSIGHTS_SECTION_MARKER = "## 9. LEARNED INSIGHTS (Auto-Updated)"
 
+# Maps weakest pillar to the CLAUDE.md section that should be improved
+PILLAR_TO_SECTION = {
+    "hook": "## 2. SCRIPT STRUCTURE RULES",
+    "click": "## 6. YOUTUBE ALGORITHM OPTIMIZATION",
+    "retention": "## 2. SCRIPT STRUCTURE RULES",
+    "engagement": "## 3. CONTENT & ANALYSIS RULES",
+    "algorithm": "## 6. YOUTUBE ALGORITHM OPTIMIZATION",
+}
+
 
 def _query_best_hook_style():
     """Find the hook style with the highest average 30s retention."""
-    from database import get_connection
     conn = get_connection()
     row = conn.execute(
         "SELECT v.hook_style FROM videos v "
@@ -32,7 +42,6 @@ def _query_best_hook_style():
 
 def _query_best_script_pattern():
     """Find the script pattern with the highest average overall score."""
-    from database import get_connection
     conn = get_connection()
     row = conn.execute(
         "SELECT v.script_pattern FROM videos v "
@@ -42,6 +51,90 @@ def _query_best_script_pattern():
     ).fetchone()
     conn.close()
     return row["script_pattern"] if row else "story_arc"
+
+
+def _get_pillar_averages():
+    """Get average pillar scores across all scored videos."""
+    conn = get_connection()
+    row = conn.execute("""
+        SELECT
+            AVG(hook_pillar_score) as avg_hook,
+            AVG(click_pillar_score) as avg_click,
+            AVG(retention_pillar_score) as avg_retention,
+            AVG(engagement_pillar_score) as avg_engagement,
+            AVG(algorithm_pillar_score) as avg_algorithm,
+            COUNT(*) as sample_size
+        FROM scores
+        WHERE hook_pillar_score IS NOT NULL
+    """).fetchone()
+    conn.close()
+    if not row or row["sample_size"] == 0:
+        return None
+    return dict(row)
+
+
+def _identify_weakest_pillar(averages):
+    """Return the pillar name with the lowest average score."""
+    if not averages:
+        return None
+    pillar_scores = {
+        "hook": averages["avg_hook"] or 0,
+        "click": averages["avg_click"] or 0,
+        "retention": averages["avg_retention"] or 0,
+        "engagement": averages["avg_engagement"] or 0,
+        "algorithm": averages["avg_algorithm"] or 0,
+    }
+    return min(pillar_scores, key=pillar_scores.get)
+
+
+def _generate_pillar_improvement_rule(weakest_pillar, avg_score):
+    """Generate a targeted improvement rule for the weakest pillar."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    rules = {
+        "hook": (
+            f"RULE ADDED [{today}]: Hook pillar avg is {avg_score:.0f}/100. "
+            "Start every video with a surprising fact, statistic, or contrarian take. "
+            "The first sentence must create a curiosity gap that demands the next 10 seconds."
+        ),
+        "click": (
+            f"RULE ADDED [{today}]: Click pillar avg is {avg_score:.0f}/100. "
+            "Titles must include a power word (killed, broke, leaked, exposed) and a number or specific noun. "
+            "Avoid vague titles. Test: would YOU click this in a feed of 20 thumbnails?"
+        ),
+        "retention": (
+            f"RULE ADDED [{today}]: Retention pillar avg is {avg_score:.0f}/100. "
+            "Insert a pattern interrupt (visual change, tone shift, rhetorical question) every 45-60 seconds. "
+            "No segment should feel like a lecture — break monologues with reactions."
+        ),
+        "engagement": (
+            f"RULE ADDED [{today}]: Engagement pillar avg is {avg_score:.0f}/100. "
+            "Every script must include at least 2 controversial but defensible opinions and 1 prediction "
+            "that viewers will want to argue about in comments."
+        ),
+        "algorithm": (
+            f"RULE ADDED [{today}]: Algorithm pillar avg is {avg_score:.0f}/100. "
+            "Target 4-6 minute videos. End with an open question that drives comments. "
+            "First 30 seconds must deliver enough value that viewers don't bounce."
+        ),
+    }
+    return rules.get(weakest_pillar, "")
+
+
+def _insert_rule_into_section(content, section_header, rule_text):
+    """Insert a rule into a specific CLAUDE.md section, right after the header line."""
+    if section_header not in content:
+        # Section not found — append to end of insights section instead
+        return content.rstrip() + "\n\n" + rule_text + "\n"
+
+    idx = content.index(section_header)
+    # Find end of the header line
+    newline_after = content.find("\n", idx)
+    if newline_after == -1:
+        newline_after = len(content)
+
+    # Insert rule after the section header line
+    insert_text = f"\n\n> {rule_text}\n"
+    return content[:newline_after] + insert_text + content[newline_after:]
 
 
 def build_pipeline_context():
@@ -65,6 +158,9 @@ def build_pipeline_context():
     recent = get_recent_videos(limit=10)
     recent_titles = [v["title"] for v in recent] if recent else []
 
+    # Pillar averages
+    pillar_avgs = _get_pillar_averages()
+
     return {
         "preferred_topic_types": preferred,
         "avoid_topic_types": avoid,
@@ -74,11 +170,15 @@ def build_pipeline_context():
         "ab_test": ab_test,
         "insights_summary": insights_summary,
         "recent_titles": recent_titles,
+        "pillar_averages": pillar_avgs,
     }
 
 
 def build_script_agent_prompt(context, topic):
     """Generate the system prompt for the Claude script-writer subagent."""
+    from run_pipeline_agents import VIRALITY_PILLARS
+    from virality_research import get_virality_context_for_agents
+
     # Read CLAUDE.md for base rules
     claude_md = ""
     if os.path.exists(CLAUDE_MD_PATH):
@@ -113,6 +213,25 @@ def build_script_agent_prompt(context, topic):
     # Insights summary
     insights_section = f"\n## PERFORMANCE INSIGHTS\n{context['insights_summary']}\n"
 
+    # Virality pillars + latest brief
+    virality_context = get_virality_context_for_agents()
+
+    # Pillar score averages for the script-writer
+    pillar_section = ""
+    pillar_avgs = context.get("pillar_averages")
+    if pillar_avgs and pillar_avgs.get("sample_size", 0) > 0:
+        weakest = _identify_weakest_pillar(pillar_avgs)
+        pillar_section = f"""
+## PILLAR SCORE AVERAGES (from {pillar_avgs['sample_size']} scored videos)
+- Hook: {pillar_avgs['avg_hook']:.0f}/100
+- Click: {pillar_avgs['avg_click']:.0f}/100
+- Retention: {pillar_avgs['avg_retention']:.0f}/100
+- Engagement: {pillar_avgs['avg_engagement']:.0f}/100
+- Algorithm: {pillar_avgs['avg_algorithm']:.0f}/100
+
+**WEAKEST PILLAR: {weakest.upper()}** — Focus extra effort on improving this pillar in this script.
+"""
+
     prompt = f"""You are a script writer for a Fireship-style AI/tech news YouTube channel.
 
 ## TOPIC
@@ -121,11 +240,14 @@ def build_script_agent_prompt(context, topic):
 ## CHANNEL RULES
 {claude_md}
 
+{virality_context}
+
 ## PERFORMANCE-BASED PREFERENCES
 {chr(10).join(perf_lines)}
 {ab_section}
 {titles_section}
 {insights_section}
+{pillar_section}
 
 Write a script following the JSON schema in CLAUDE.md. The full_narration must be ONE continuous flowing text.
 """
@@ -133,12 +255,7 @@ Write a script following the JSON schema in CLAUDE.md. The full_narration must b
 
 
 def update_claude_md_insights():
-    """Append new unapplied insights to CLAUDE.md section 9 and mark them as applied."""
-    unapplied = get_unapplied_insights()
-    if not unapplied:
-        return 0
-
-    # Read current CLAUDE.md
+    """Update CLAUDE.md with targeted pillar improvements and append unapplied insights to section 9."""
     if not os.path.exists(CLAUDE_MD_PATH):
         return 0
 
@@ -146,38 +263,68 @@ def update_claude_md_insights():
         content = f.read()
 
     today = datetime.now().strftime("%Y-%m-%d")
+    changes_made = 0
 
-    # Format new insight lines
-    new_lines = []
-    for insight in unapplied:
-        confidence = insight.get("confidence", 0.5)
-        text = insight["insight_text"]
-        new_lines.append(f"- [{today}] {text} (confidence: {confidence})")
+    # --- Step 1: Pillar-targeted improvements ---
+    pillar_avgs = _get_pillar_averages()
+    if pillar_avgs and pillar_avgs["sample_size"] >= 2:
+        weakest = _identify_weakest_pillar(pillar_avgs)
+        avg_score = pillar_avgs[f"avg_{weakest}"] or 0
 
-    new_block = "\n".join(new_lines)
+        # Only add a rule if the weakest pillar is below 60
+        if avg_score < 60:
+            rule = _generate_pillar_improvement_rule(weakest, avg_score)
+            section = PILLAR_TO_SECTION.get(weakest)
 
-    # Find or create the insights section
-    if INSIGHTS_SECTION_MARKER in content:
-        # Append after existing section content
-        marker_idx = content.index(INSIGHTS_SECTION_MARKER)
-        # Find the next section header (## ) or end of file
-        rest = content[marker_idx + len(INSIGHTS_SECTION_MARKER):]
-        next_section = rest.find("\n## ")
-        if next_section == -1:
-            # Append at end
-            content = content.rstrip() + "\n" + new_block + "\n"
+            # Check if this exact rule type was already added today (avoid duplicates)
+            rule_marker = f"RULE ADDED [{today}]"
+            if section and rule_marker not in content:
+                content = _insert_rule_into_section(content, section, rule)
+                changes_made += 1
+
+                # Log the change as an insight
+                evidence = (
+                    f"weakest_pillar={weakest}, avg_score={avg_score:.1f}, "
+                    f"sample_size={pillar_avgs['sample_size']}"
+                )
+                insert_insight(
+                    f"Auto-rule added to {section}: {weakest} pillar improvement (avg {avg_score:.0f}/100)",
+                    "pillar_improvement",
+                    min(1.0, pillar_avgs["sample_size"] / 10),
+                    evidence,
+                )
+
+    # --- Step 2: Append unapplied insights to section 9 ---
+    unapplied = get_unapplied_insights()
+    if unapplied:
+        new_lines = []
+        for insight in unapplied:
+            confidence = insight.get("confidence", 0.5)
+            text = insight["insight_text"]
+            new_lines.append(f"- [{today}] {text} (confidence: {confidence})")
+
+        new_block = "\n".join(new_lines)
+
+        if INSIGHTS_SECTION_MARKER in content:
+            marker_idx = content.index(INSIGHTS_SECTION_MARKER)
+            rest = content[marker_idx + len(INSIGHTS_SECTION_MARKER):]
+            next_section = rest.find("\n## ")
+            if next_section == -1:
+                content = content.rstrip() + "\n" + new_block + "\n"
+            else:
+                insert_pos = marker_idx + len(INSIGHTS_SECTION_MARKER) + next_section
+                content = content[:insert_pos] + "\n" + new_block + content[insert_pos:]
         else:
-            insert_pos = marker_idx + len(INSIGHTS_SECTION_MARKER) + next_section
-            content = content[:insert_pos] + "\n" + new_block + content[insert_pos:]
-    else:
-        # Create section at end of file
-        content = content.rstrip() + "\n\n---\n\n" + INSIGHTS_SECTION_MARKER + "\n\n" + new_block + "\n"
+            content = content.rstrip() + "\n\n---\n\n" + INSIGHTS_SECTION_MARKER + "\n\n" + new_block + "\n"
 
-    with open(CLAUDE_MD_PATH, "w", encoding="utf-8") as f:
-        f.write(content)
+        for insight in unapplied:
+            mark_insight_applied(insight["id"])
 
-    # Mark all as applied
-    for insight in unapplied:
-        mark_insight_applied(insight["id"])
+        changes_made += len(unapplied)
 
-    return len(unapplied)
+    # Write back if anything changed
+    if changes_made > 0:
+        with open(CLAUDE_MD_PATH, "w", encoding="utf-8") as f:
+            f.write(content)
+
+    return changes_made
