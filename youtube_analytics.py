@@ -14,7 +14,11 @@ from database import insert_analytics, get_connection, init_db
 SCOPES = [
     "https://www.googleapis.com/auth/youtube.readonly",
     "https://www.googleapis.com/auth/yt-analytics.readonly",
+    "https://www.googleapis.com/auth/youtube.upload",
+    "https://www.googleapis.com/auth/youtube.force-ssl",  # Required for thumbnail uploads
 ]
+# NOTE: Adding new scopes requires deleting the existing token.json
+# so the user re-authenticates with the expanded scope set.
 TOKEN_PATH = os.path.join(BASE_DIR, "token.json")
 CREDENTIALS_PATH = os.path.join(BASE_DIR, "credentials.json")
 

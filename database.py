@@ -15,6 +15,24 @@ def get_connection():
     return conn
 
 
+def _migrate_db():
+    """Add columns that may not exist in older databases."""
+    conn = get_connection()
+    migrations = [
+        ("videos", "description", "TEXT"),
+        ("videos", "tags", "TEXT"),
+        ("videos", "thumbnail_path", "TEXT"),
+        ("scores", "virality_score", "REAL"),
+    ]
+    for table, column, col_type in migrations:
+        try:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+    conn.commit()
+    conn.close()
+
+
 def init_db():
     """Create all tables if they don't exist."""
     conn = get_connection()
@@ -30,6 +48,9 @@ def init_db():
             video_file_path TEXT,
             youtube_video_id TEXT,
             status TEXT DEFAULT 'draft',
+            description TEXT,
+            tags TEXT,
+            thumbnail_path TEXT,
             created_at TEXT DEFAULT (datetime('now'))
         );
 
@@ -62,6 +83,7 @@ def init_db():
             visual_score REAL,
             retention_score REAL,
             overall_score REAL,
+            virality_score REAL,
             notes TEXT,
             scored_at TEXT DEFAULT (datetime('now'))
         );
@@ -101,19 +123,23 @@ def init_db():
     """)
     conn.commit()
     conn.close()
+    _migrate_db()
 
 
 # ---------------------------------------------------------------------------
 # Videos
 # ---------------------------------------------------------------------------
 
-def insert_video(title, topic, topic_category, script_pattern, hook_style, video_file_path):
+def insert_video(title, topic, topic_category, script_pattern, hook_style, video_file_path,
+                  description=None, tags=None, thumbnail_path=None):
     """Insert a new video record and return its id."""
     conn = get_connection()
     cur = conn.execute(
-        """INSERT INTO videos (title, topic, topic_category, script_pattern, hook_style, video_file_path)
-           VALUES (?, ?, ?, ?, ?, ?)""",
-        (title, topic, topic_category, script_pattern, hook_style, video_file_path),
+        """INSERT INTO videos (title, topic, topic_category, script_pattern, hook_style,
+           video_file_path, description, tags, thumbnail_path)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (title, topic, topic_category, script_pattern, hook_style, video_file_path,
+         description, tags, thumbnail_path),
     )
     vid = cur.lastrowid
     conn.commit()
@@ -193,8 +219,8 @@ def insert_score(video_id, scores_dict):
     conn = get_connection()
     conn.execute(
         """INSERT INTO scores (video_id, hook_score, content_score, visual_score,
-           retention_score, overall_score, notes)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+           retention_score, overall_score, virality_score, notes)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             video_id,
             scores_dict.get("hook_score"),
@@ -202,6 +228,7 @@ def insert_score(video_id, scores_dict):
             scores_dict.get("visual_score"),
             scores_dict.get("retention_score"),
             scores_dict.get("overall_score"),
+            scores_dict.get("virality_score"),
             scores_dict.get("notes"),
         ),
     )

@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
+from email.mime.image import MIMEImage
 from email import encoders
 import os
 
@@ -58,29 +59,83 @@ def _send_email(subject, html_body, attachments=None):
         return False
 
 
-def send_review_email(video_id, title, topic, script_summary, thumbnail_path=None):
-    """Send a pre-publish review email with approve/reject buttons."""
+def send_review_email(video_id, title, topic, description="", script_summary="",
+                      qa_report="", thumbnail_path=None, video_path=None):
+    """Send a pre-publish review email with inline thumbnail, video link, QA report,
+    and approve/reject buttons.
+
+    Args:
+        video_id: Unique identifier for this video.
+        title: Video title.
+        topic: Topic string.
+        description: Video description text.
+        script_summary: First ~500 chars of the script narration.
+        qa_report: QA report string (pass/fail details).
+        thumbnail_path: Path to thumbnail image (embedded inline via CID).
+        video_path: Path to the video file (shown as clickable local link).
+    """
     summary = (script_summary or "")[:500]
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    attachments = [thumbnail_path] if thumbnail_path and os.path.isfile(thumbnail_path) else []
+
+    # Build video file link
+    video_link_html = ""
+    if video_path and os.path.isfile(video_path):
+        abs_video = os.path.abspath(video_path).replace("\\", "/")
+        video_link_html = f"""
+        <tr><td style="padding:8px;font-weight:bold;color:#555;">Video File</td>
+            <td style="padding:8px;"><a href="file:///{abs_video}"
+                style="color:#3b82f6;text-decoration:underline;">{os.path.basename(video_path)}</a></td></tr>
+        """
+
+    # Inline thumbnail CID reference
+    has_thumbnail = thumbnail_path and os.path.isfile(thumbnail_path)
+    thumbnail_html = ""
+    if has_thumbnail:
+        thumbnail_html = """
+        <div style="margin:16px 0;text-align:center;">
+            <img src="cid:thumbnail" style="max-width:100%;border-radius:8px;border:2px solid #333;" />
+        </div>
+        """
+
+    # Description section
+    description_html = ""
+    if description:
+        description_html = f"""
+        <h3 style="color:#555;">Description</h3>
+        <p style="background:#f5f5f5;padding:12px;border-radius:6px;font-size:14px;line-height:1.5;">
+            {description}
+        </p>
+        """
+
+    # QA report section
+    qa_html = ""
+    if qa_report:
+        qa_html = f"""
+        <h3 style="color:#555;">QA Report</h3>
+        <pre style="background:#1a1a2e;color:#e2e8f0;padding:12px;border-radius:6px;
+                    font-size:13px;line-height:1.6;overflow-x:auto;white-space:pre-wrap;">{qa_report}</pre>
+        """
 
     html = f"""
     <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;">
-        <h2 style="color:#333;">Video Ready for Review</h2>
+        <h2 style="color:#333;font-size:22px;margin-bottom:4px;">{title}</h2>
+        <p style="color:#999;font-size:13px;margin-top:0;">Video Ready for Review</p>
+        {thumbnail_html}
         <table style="width:100%;border-collapse:collapse;">
-            <tr><td style="padding:8px;font-weight:bold;color:#555;">Title</td>
-                <td style="padding:8px;">{title}</td></tr>
             <tr><td style="padding:8px;font-weight:bold;color:#555;">Topic</td>
                 <td style="padding:8px;">{topic}</td></tr>
             <tr><td style="padding:8px;font-weight:bold;color:#555;">Video ID</td>
                 <td style="padding:8px;">{video_id}</td></tr>
             <tr><td style="padding:8px;font-weight:bold;color:#555;">Generated</td>
                 <td style="padding:8px;">{timestamp}</td></tr>
+            {video_link_html}
         </table>
+        {description_html}
         <h3 style="color:#555;">Script Preview</h3>
         <p style="background:#f5f5f5;padding:12px;border-radius:6px;font-size:14px;line-height:1.5;">
             {summary}{"..." if len(script_summary or "") > 500 else ""}
         </p>
+        {qa_html}
         <div style="text-align:center;margin:24px 0;">
             <a href="http://localhost:5555/approve/{video_id}"
                style="display:inline-block;padding:12px 32px;background:#22c55e;color:#fff;
@@ -97,7 +152,44 @@ def send_review_email(video_id, title, topic, script_summary, thumbnail_path=Non
         <p style="color:#999;font-size:12px;">Buttons connect to the local scheduler on port 5555.</p>
     </div>
     """
-    return _send_email(f"[Review] {title}", html, attachments)
+
+    # Build the email with inline thumbnail via CID
+    if not all([GMAIL_ADDRESS, GMAIL_APP_PASSWORD, GMAIL_RECIPIENT]):
+        print("[email_notifier] Gmail credentials not configured, skipping email.")
+        return False
+
+    msg = MIMEMultipart("related")
+    msg["From"] = GMAIL_ADDRESS
+    msg["To"] = GMAIL_RECIPIENT
+    msg["Subject"] = f"[Review] {title}"
+    msg.attach(MIMEText(html, "html"))
+
+    # Attach thumbnail inline with CID
+    if has_thumbnail:
+        with open(thumbnail_path, "rb") as f:
+            img_data = f.read()
+        ext = os.path.splitext(thumbnail_path)[1].lstrip(".").lower()
+        if ext in ("jpg", "jpeg"):
+            subtype = "jpeg"
+        elif ext == "png":
+            subtype = "png"
+        else:
+            subtype = "jpeg"
+        img_part = MIMEImage(img_data, _subtype=subtype)
+        img_part.add_header("Content-ID", "<thumbnail>")
+        img_part.add_header("Content-Disposition", "inline", filename=os.path.basename(thumbnail_path))
+        msg.attach(img_part)
+
+    try:
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=30) as server:
+            server.starttls()
+            server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
+            server.send_message(msg)
+        print(f"[email_notifier] Sent: [Review] {title}")
+        return True
+    except Exception as exc:
+        print(f"[email_notifier] Failed to send email: {exc}")
+        return False
 
 
 def send_error_alert(error_type, error_message, traceback_str=""):

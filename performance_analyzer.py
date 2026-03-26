@@ -104,17 +104,55 @@ def score_video(video_id):
         0.50,  # 50% end retention is excellent
     )))
 
-    # Overall — weighted average
+    # Virality score — composite of CTR, hook, engagement, growth (0-100)
+    # CTR component (0-25)
+    ctr_val = ctr or 0
+    if ctr_val >= BENCHMARKS["ctr_great"]:
+        ctr_component = 25
+    elif ctr_val >= BENCHMARKS["ctr_good"]:
+        ctr_component = 15
+    else:
+        ctr_component = int(25 * ctr_val / max(BENCHMARKS["ctr_good"], 0.001))
+
+    # Hook component (0-25)
+    ret_30_val = ret_30 or 0
+    if ret_30_val >= BENCHMARKS["retention_30s_great"]:
+        hook_component = 25
+    elif ret_30_val >= BENCHMARKS["retention_30s_good"]:
+        hook_component = 15
+    else:
+        hook_component = int(25 * ret_30_val / max(BENCHMARKS["retention_30s_good"], 0.001))
+
+    # Engagement component (0-25) — (comments + likes) / views
+    engagement_ratio = ((comments or 0) + (likes or 0)) / max(views, 1)
+    engagement_component = _clamp(int(engagement_ratio * 500), 0, 25)  # 5% ratio -> 25
+
+    # Growth component (0-25) — subs_gained / views
+    cur.execute(
+        "SELECT subs_gained FROM analytics WHERE video_id = ? ORDER BY date DESC LIMIT 1",
+        (video_id,),
+    )
+    subs_row = cur.fetchone()
+    subs_gained = (subs_row[0] or 0) if subs_row else 0
+    growth_ratio = subs_gained / max(views, 1)
+    growth_component = _clamp(int(growth_ratio * 2500), 0, 25)  # 1% ratio -> 25
+
+    virality_score = _clamp(
+        ctr_component + hook_component + engagement_component + growth_component, 0, 100
+    )
+
+    # Overall — weighted average (hook 25%, content 25%, visual 10%, retention 20%, virality 20%)
     overall_score = _clamp(int(
-        0.30 * hook_score
-        + 0.30 * content_score
-        + 0.15 * visual_score
-        + 0.25 * retention_score
+        0.25 * hook_score
+        + 0.25 * content_score
+        + 0.10 * visual_score
+        + 0.20 * retention_score
+        + 0.20 * virality_score
     ))
 
     notes = (
         f"views={views}, ctr={ctr}, avg_dur={avg_dur}s, "
-        f"ret_30={ret_30}, ret_end={ret_end}"
+        f"ret_30={ret_30}, ret_end={ret_end}, subs={subs_gained}"
     )
 
     scores_dict = {
@@ -122,6 +160,7 @@ def score_video(video_id):
         "content_score": content_score,
         "visual_score": visual_score,
         "retention_score": retention_score,
+        "virality_score": virality_score,
         "overall_score": overall_score,
         "notes": notes,
     }
@@ -172,6 +211,83 @@ def analyze_topic_resonance():
     ]
     conn.close()
     return results
+
+
+def analyze_virality_factors():
+    """Identify factors correlated with high virality scores."""
+    conn = get_connection()
+    cur = conn.cursor()
+
+    factors = []
+
+    # Topic category vs virality
+    cur.execute(
+        "SELECT v.topic_category, AVG(s.virality_score) AS avg_vir, COUNT(*) AS n "
+        "FROM videos v JOIN scores s ON v.id = s.video_id "
+        "WHERE v.topic_category IS NOT NULL AND s.virality_score IS NOT NULL "
+        "GROUP BY v.topic_category HAVING n >= 2 "
+        "ORDER BY avg_vir DESC"
+    )
+    for row in cur.fetchall():
+        factors.append({
+            "factor": f"topic_category={row[0]}",
+            "correlation": round(row[1], 1),
+            "sample_size": row[2],
+        })
+
+    # Hook style vs virality
+    cur.execute(
+        "SELECT v.hook_style, AVG(s.virality_score) AS avg_vir, COUNT(*) AS n "
+        "FROM videos v JOIN scores s ON v.id = s.video_id "
+        "WHERE v.hook_style IS NOT NULL AND s.virality_score IS NOT NULL "
+        "GROUP BY v.hook_style HAVING n >= 2 "
+        "ORDER BY avg_vir DESC"
+    )
+    for row in cur.fetchall():
+        factors.append({
+            "factor": f"hook_style={row[0]}",
+            "correlation": round(row[1], 1),
+            "sample_size": row[2],
+        })
+
+    # Title length buckets vs virality
+    cur.execute(
+        "SELECT "
+        "  CASE "
+        "    WHEN LENGTH(v.title) <= 40 THEN 'short' "
+        "    WHEN LENGTH(v.title) <= 60 THEN 'medium' "
+        "    ELSE 'long' "
+        "  END AS title_bucket, "
+        "  AVG(s.virality_score) AS avg_vir, COUNT(*) AS n "
+        "FROM videos v JOIN scores s ON v.id = s.video_id "
+        "WHERE s.virality_score IS NOT NULL "
+        "GROUP BY title_bucket HAVING n >= 2 "
+        "ORDER BY avg_vir DESC"
+    )
+    for row in cur.fetchall():
+        factors.append({
+            "factor": f"title_length={row[0]}",
+            "correlation": round(row[1], 1),
+            "sample_size": row[2],
+        })
+
+    # Script pattern vs virality
+    cur.execute(
+        "SELECT v.script_pattern, AVG(s.virality_score) AS avg_vir, COUNT(*) AS n "
+        "FROM videos v JOIN scores s ON v.id = s.video_id "
+        "WHERE v.script_pattern IS NOT NULL AND s.virality_score IS NOT NULL "
+        "GROUP BY v.script_pattern HAVING n >= 2 "
+        "ORDER BY avg_vir DESC"
+    )
+    for row in cur.fetchall():
+        factors.append({
+            "factor": f"script_pattern={row[0]}",
+            "correlation": round(row[1], 1),
+            "sample_size": row[2],
+        })
+
+    conn.close()
+    return factors
 
 
 def identify_ab_test_winners():
@@ -261,6 +377,33 @@ def generate_insights():
             )
             insert_insight(text, "ctr_analysis", round(min(1.0, best_ctr["sample_size"] / 6), 2), "")
             insights.append(text)
+
+    # Virality factor insights
+    virality_factors = analyze_virality_factors()
+    if virality_factors:
+        best_factor = virality_factors[0]
+        if best_factor["correlation"] >= 60:
+            text = (
+                f"Highest virality factor: {best_factor['factor']} "
+                f"(avg score {best_factor['correlation']}, n={best_factor['sample_size']})"
+            )
+            confidence = min(1.0, best_factor["sample_size"] / 8)
+            insert_insight(text, "virality_analysis", round(confidence, 2), f"factors: {len(virality_factors)}")
+            insights.append(text)
+
+        # Find if any factor stands out significantly
+        if len(virality_factors) >= 2:
+            top = virality_factors[0]
+            bottom = virality_factors[-1]
+            gap = top["correlation"] - bottom["correlation"]
+            if gap >= 15:
+                text = (
+                    f"{top['factor']} scores {gap:.0f} points higher in virality "
+                    f"than {bottom['factor']} — strong signal"
+                )
+                confidence = min(1.0, (top["sample_size"] + bottom["sample_size"]) / 12)
+                insert_insight(text, "virality_analysis", round(confidence, 2), "factor_gap")
+                insights.append(text)
 
     # A/B test insights
     ab_winners = identify_ab_test_winners()

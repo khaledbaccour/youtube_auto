@@ -13,8 +13,9 @@ from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont
 
 from config import BASE_DIR
-from database import init_db, update_video_status
+from database import init_db, update_video_status, get_video
 from email_notifier import send_error_alert
+from youtube_uploader import upload_video
 
 SCHEDULE_HOURS = [12, 14, 18]
 STATE_FILE = os.path.join(BASE_DIR, "scheduler_state.json")
@@ -76,6 +77,28 @@ class SchedulerState:
 # HTTP approve/reject server
 # ---------------------------------------------------------------------------
 
+def _do_upload(video_id):
+    """Upload an approved video to YouTube in background."""
+    try:
+        video = get_video(video_id)
+        if video:
+            upload_video(
+                video_id=video_id,
+                video_path=video["video_file_path"],
+                title=video["title"],
+                description=video.get("description", ""),
+                tags=json.loads(video.get("tags", "[]")) if video.get("tags") else [],
+                thumbnail_path=video.get("thumbnail_path"),
+            )
+    except Exception as e:
+        print(f"[scheduler] Upload failed for video {video_id}: {e}")
+        tb_str = traceback.format_exc()
+        try:
+            send_error_alert("Upload Failed", str(e), tb_str)
+        except Exception:
+            pass
+
+
 class ApproveRejectHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path.strip("/")
@@ -88,14 +111,25 @@ class ApproveRejectHandler(BaseHTTPRequestHandler):
                 video_id_int = int(video_id)
                 new_status = "approved" if action == "approve" else "rejected"
                 update_video_status(video_id_int, new_status)
-                color = "#22c55e" if action == "approve" else "#ef4444"
-                label = "Approved" if action == "approve" else "Rejected"
-                self._html_response(200, f"""
-                    <div style="font-family:Arial,sans-serif;text-align:center;padding:60px;">
-                        <h1 style="color:{color};">{label}</h1>
-                        <p>Video #{video_id} has been {new_status}.</p>
-                    </div>
-                """)
+
+                if action == "approve":
+                    # Start YouTube upload in background thread
+                    threading.Thread(
+                        target=_do_upload, args=(video_id_int,), daemon=True
+                    ).start()
+                    self._html_response(200, """
+                        <div style="font-family:Arial,sans-serif;text-align:center;padding:60px;">
+                            <h1 style="color:#22c55e;">Approved</h1>
+                            <p>Video #%s has been approved and upload started!</p>
+                        </div>
+                    """ % video_id)
+                else:
+                    self._html_response(200, """
+                        <div style="font-family:Arial,sans-serif;text-align:center;padding:60px;">
+                            <h1 style="color:#ef4444;">Rejected</h1>
+                            <p>Video #%s has been rejected.</p>
+                        </div>
+                    """ % video_id)
             except ValueError:
                 self._html_response(400, "<h1>Bad Request</h1><p>Invalid video ID.</p>")
             except Exception as exc:

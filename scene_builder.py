@@ -5,9 +5,8 @@ Downloads real images from the web for rich visuals.
 
 import os
 import re
-import hashlib
-import requests
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
+from image_fetcher import fetch_image
 
 # --- Constants ---
 WIDTH, HEIGHT = 1920, 1080
@@ -119,81 +118,6 @@ def _create_dark_bg():
     return Image.new("RGB", (WIDTH, HEIGHT), (0, 0, 0))
 
 
-def _download_image(search_query, output_path=None):
-    """Download an image from Bing Image Search for the given query.
-    Returns the local file path or None if failed."""
-    if not search_query:
-        return None
-
-    os.makedirs(IMAGE_CACHE_DIR, exist_ok=True)
-
-    # Use hash for cache filename
-    query_hash = hashlib.md5(search_query.encode()).hexdigest()[:12]
-    if output_path is None:
-        output_path = os.path.join(IMAGE_CACHE_DIR, f"{query_hash}.jpg")
-
-    # Return cached if exists
-    if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
-        return output_path
-
-    try:
-        search_url = "https://www.bing.com/images/search"
-        params = {"q": search_query, "first": "1", "count": "10", "qft": "+filterui:photo-photo+filterui:imagesize-large"}
-        resp = requests.get(search_url, params=params, headers=HEADERS, timeout=10)
-        resp.raise_for_status()
-
-        # Parse image URLs from Bing results HTML
-        # Look for murl patterns (media URL in Bing image results)
-        img_urls = re.findall(r'murl&quot;:&quot;(https?://[^&]+?)&quot;', resp.text)
-        if not img_urls:
-            # Fallback: look for src attributes on img tags
-            img_urls = re.findall(r'src="(https?://[^"]+\.(?:jpg|jpeg|png|webp))"', resp.text)
-
-        for img_url in img_urls[:8]:
-            # Skip stock photo sites with watermarks
-            if any(domain in img_url.lower() for domain in WATERMARK_DOMAINS):
-                continue
-            try:
-                img_resp = requests.get(img_url, headers=HEADERS, timeout=10, stream=True)
-                if img_resp.status_code == 200 and len(img_resp.content) > 20000:
-                    with open(output_path, "wb") as f:
-                        f.write(img_resp.content)
-                    # Verify it's a valid image with minimum resolution
-                    test = Image.open(output_path)
-                    w, h = test.size
-                    test.verify()
-                    if w < 800 or h < 600:
-                        continue
-                    return output_path
-            except Exception:
-                continue
-
-    except Exception as e:
-        print(f"  Image download failed for '{search_query}': {e}")
-
-    # Fallback: retry without large-image filter (accept smaller images)
-    try:
-        params = {"q": search_query, "first": "1", "count": "10", "qft": "+filterui:photo-photo"}
-        resp = requests.get("https://www.bing.com/images/search", params=params, headers=HEADERS, timeout=10)
-        img_urls = re.findall(r'murl&quot;:&quot;(https?://[^&]+?)&quot;', resp.text)
-        for img_url in img_urls[:8]:
-            if any(domain in img_url.lower() for domain in WATERMARK_DOMAINS):
-                continue
-            try:
-                img_resp = requests.get(img_url, headers=HEADERS, timeout=10, stream=True)
-                if img_resp.status_code == 200 and len(img_resp.content) > 5000:
-                    with open(output_path, "wb") as f:
-                        f.write(img_resp.content)
-                    test = Image.open(output_path)
-                    test.verify()
-                    return output_path
-            except Exception:
-                continue
-    except Exception:
-        pass
-
-    return None
-
 
 def _fit_image(img, target_w, target_h):
     """Resize and crop image to fill target dimensions without stretching."""
@@ -254,7 +178,7 @@ def _render_image_with_text(img, draw, scene):
     text = scene.get("main_text", "")
     query = scene.get("image_search_query", "")
 
-    img_path = _download_image(query) if query else None
+    img_path = fetch_image(query) if query else None
 
     if img_path:
         try:
@@ -307,7 +231,7 @@ def _render_article_screenshot(img, draw, scene):
     query = scene.get("image_search_query", "")
     text = scene.get("main_text", "")
 
-    img_path = _download_image(query) if query else None
+    img_path = fetch_image(query) if query else None
 
     if img_path:
         try:
@@ -373,7 +297,7 @@ def _render_image_grid(img, draw, scene):
         else:
             search = f"{query} {label}".strip() if query or label else ""
 
-        img_path = _download_image(search) if search else None
+        img_path = fetch_image(search) if search else None
 
         if img_path:
             try:
@@ -412,7 +336,7 @@ def _render_fullscreen_image(img, draw, scene):
     target_w = WIDTH - border * 2
     target_h = HEIGHT - border * 2
 
-    img_path = _download_image(query) if query else None
+    img_path = fetch_image(query) if query else None
 
     if img_path:
         try:
@@ -491,7 +415,7 @@ def _render_meme_fullscreen(img, draw, scene):
     target_w = WIDTH - border * 2
     target_h = HEIGHT - border * 2
 
-    img_path = _download_meme_image(query) if query else None
+    img_path = fetch_image(query, is_meme=True) if query else None
 
     if img_path:
         try:
@@ -526,57 +450,6 @@ def _render_meme_fullscreen(img, draw, scene):
             _text_shadow(draw, ((WIDTH - tw) // 2, y), line, font, TEXT_COLOR, offset=4)
             y += 64
 
-
-def _download_meme_image(search_query):
-    """Download a meme image — no photo filter since memes are often illustrations."""
-    if not search_query:
-        return None
-
-    os.makedirs(IMAGE_CACHE_DIR, exist_ok=True)
-
-    query_hash = hashlib.md5(search_query.encode()).hexdigest()[:12]
-    output_path = os.path.join(IMAGE_CACHE_DIR, f"{query_hash}.jpg")
-
-    if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
-        return output_path
-
-    try:
-        search_url = "https://www.bing.com/images/search"
-        params = {"q": search_query, "first": "1", "count": "10"}
-        resp = requests.get(search_url, params=params, headers=HEADERS, timeout=10)
-        resp.raise_for_status()
-
-        img_urls = re.findall(r'murl&quot;:&quot;(https?://[^&]+?)&quot;', resp.text)
-        if not img_urls:
-            img_urls = re.findall(r'src="(https?://[^"]+\.(?:jpg|jpeg|png|webp|gif))"', resp.text)
-
-        for img_url in img_urls[:8]:
-            if any(domain in img_url.lower() for domain in WATERMARK_DOMAINS):
-                continue
-            try:
-                img_resp = requests.get(img_url, headers=HEADERS, timeout=10, stream=True)
-                if img_resp.status_code == 200 and len(img_resp.content) > 15000:
-                    with open(output_path, "wb") as f:
-                        f.write(img_resp.content)
-                    test = Image.open(output_path)
-                    w, h = test.size
-                    test.verify()
-                    if w < 600 or h < 400:
-                        continue
-                    # Reject mostly-white images (product pages, marketing screenshots)
-                    img_check = Image.open(output_path).convert("RGB")
-                    pixels = img_check.resize((100, 100)).getdata()
-                    white_count = sum(1 for r, g, b in pixels if r > 240 and g > 240 and b > 240)
-                    if white_count / len(pixels) > 0.55:
-                        continue
-                    return output_path
-            except Exception:
-                continue
-
-    except Exception as e:
-        print(f"  Meme image download failed for '{search_query}': {e}")
-
-    return None
 
 
 def _render_image_collage(img, draw, scene):
@@ -631,7 +504,7 @@ def _render_image_collage(img, draw, scene):
         query = queries[i] if i < len(queries) else ""
         label = labels[i] if i < len(labels) else ""
 
-        img_path = _download_image(query) if query else None
+        img_path = fetch_image(query) if query else None
 
         if img_path:
             try:
