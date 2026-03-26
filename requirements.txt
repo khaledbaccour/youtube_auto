@@ -1,0 +1,12 @@
+moviepy
+Pillow
+feedparser
+requests
+kokoro-onnx
+numpy
+soundfile
+pytrends
+python-dotenv
+google-auth-oauthlib
+google-api-python-client
+pystray

@@ -1,0 +1,11 @@
+.env
+output/
+assets/models/
+__pycache__/
+*.pyc
+*.pyo
+token.json
+credentials.json
+*.db
+scheduler_state.json
+.claude/
