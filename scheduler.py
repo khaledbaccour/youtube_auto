@@ -17,9 +17,14 @@ from database import init_db, update_video_status, get_video
 from email_notifier import send_error_alert
 from youtube_uploader import upload_video
 
+import re as _re
+import subprocess
+
 SCHEDULE_HOURS = [12, 14, 18]
 STATE_FILE = os.path.join(BASE_DIR, "scheduler_state.json")
+TUNNEL_URL_FILE = os.path.join(BASE_DIR, "output", "tunnel_url.txt")
 HTTP_PORT = 5555
+TUNNEL_URL = None  # set at startup by _start_cloudflare_tunnel()
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +152,39 @@ class ApproveRejectHandler(BaseHTTPRequestHandler):
         pass  # suppress console logging
 
 
+def _start_cloudflare_tunnel():
+    """Start a Cloudflare Quick Tunnel to expose port 5555 publicly.
+    Captures the public URL and saves it for email buttons."""
+    global TUNNEL_URL
+    try:
+        proc = subprocess.Popen(
+            ["cloudflared", "tunnel", "--url", f"http://localhost:{HTTP_PORT}"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        # cloudflared prints the URL to stderr
+        for line in proc.stderr:
+            text = line.decode("utf-8", errors="replace").strip()
+            match = _re.search(r"(https://[a-z0-9-]+\.trycloudflare\.com)", text)
+            if match:
+                TUNNEL_URL = match.group(1)
+                os.makedirs(os.path.dirname(TUNNEL_URL_FILE), exist_ok=True)
+                with open(TUNNEL_URL_FILE, "w") as f:
+                    f.write(TUNNEL_URL)
+                print(f"[scheduler] Cloudflare tunnel: {TUNNEL_URL}")
+                break
+        # Keep reading stderr to prevent pipe buffer from filling
+        def _drain():
+            for _ in proc.stderr:
+                pass
+        threading.Thread(target=_drain, daemon=True).start()
+    except FileNotFoundError:
+        print("[scheduler] cloudflared not found — install with: winget install cloudflare.cloudflared")
+        print("[scheduler] Falling back to localhost:5555 (approve/reject only works locally)")
+    except Exception as e:
+        print(f"[scheduler] Cloudflare tunnel failed: {e}")
+
+
 def _start_http_server():
     server = HTTPServer(("0.0.0.0", HTTP_PORT), ApproveRejectHandler)
     server.serve_forever()
@@ -244,6 +282,10 @@ def run_scheduler():
     http_thread = threading.Thread(target=_start_http_server, daemon=True)
     http_thread.start()
     print(f"[scheduler] HTTP server on port {HTTP_PORT}")
+
+    # Start Cloudflare tunnel for public approve/reject URLs
+    tunnel_thread = threading.Thread(target=_start_cloudflare_tunnel, daemon=True)
+    tunnel_thread.start()
 
     # Catch-up: run the most recent missed hour (max 1)
     missed = state.get_missed_runs()

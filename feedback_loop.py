@@ -256,6 +256,12 @@ def build_script_agent_prompt(context, topic):
 {pillar_section}
 
 Write a script following the JSON schema in CLAUDE.md. The full_narration must be ONE continuous flowing text.
+
+IMPORTANT: You MUST include a "thumbnail" object in your JSON output with:
+- "layout": one of "hero_right", "hero_left", "center_dramatic" (rotate across videos)
+- "headline": 3-6 word punchy text, use *asterisks* on 1-2 key words for red accent (e.g. "*9B* BEATS *120B*")
+- "image_search_query": specific 5+ word query for the hero image (product logo, person, screenshot — never abstract)
+The thumbnail is the #1 driver of clicks. Make it count.
 """
     return prompt
 

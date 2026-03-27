@@ -86,6 +86,15 @@ def run_pipeline():
     frame_paths = build_scenes(scenes)
     print(f"  Frames: {len(frame_paths)}")
 
+    # Step 7.5: Generate thumbnail
+    print("[7.5/10] Generating thumbnail...")
+    from thumbnail_generator import generate_thumbnail
+    with open(script_path) as f:
+        script_json = json.load(f)
+    thumbnail_data = script_json.get("thumbnail", {})
+    thumbnail_path = os.path.join(OUTPUT_DIR, "thumbnail.png")
+    generate_thumbnail(thumbnail_data, title, thumbnail_path)
+
     # Step 8: Assemble video
     print("[8/10] Assembling video...")
     scene_durations = calculate_scene_durations(scenes, total_duration)

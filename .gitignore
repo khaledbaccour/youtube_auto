@@ -9,3 +9,6 @@ credentials.json
 *.db
 scheduler_state.json
 .claude/
+.playwright-mcp/
+node_modules/
+videoTEMP_MPY_*

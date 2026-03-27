@@ -96,15 +96,16 @@ def _text_stroke(draw, xy, text, font, fill, stroke_color="#000000", stroke_widt
     draw.text((sx, sy), text, fill=fill, font=font)
 
 
-def _render_rich_text(draw, xy, text, font, default_fill, shadow_color="#000000", offset=3):
-    """Render text with *red accent* words. Words in *asterisks* render in red with dark stroke."""
+def _render_rich_text(draw, xy, text, font, default_fill, shadow_color="#000000", offset=3, accent_color=None):
+    """Render text with *red accent* words. Words in *asterisks* render in accent color with dark stroke."""
+    color = accent_color or ACCENT_RED
     sx, sy = xy
     parts = re.split(r'(\*[^*]+\*)', text)
     cursor_x = sx
     for part in parts:
         if part.startswith('*') and part.endswith('*'):
             word = part[1:-1]
-            _text_stroke(draw, (cursor_x, sy), word, font, ACCENT_RED, stroke_color=shadow_color, stroke_width=3)
+            _text_stroke(draw, (cursor_x, sy), word, font, color, stroke_color=shadow_color, stroke_width=3)
             bbox = draw.textbbox((0, 0), word, font=font)
             cursor_x += bbox[2] - bbox[0] + 8
         else:

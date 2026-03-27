@@ -77,6 +77,26 @@ def validate_script():
     print(json.dumps(result, indent=2))
     return result
 
+def run_thumbnail():
+    """Generate thumbnail from script.json thumbnail data. Prints result JSON."""
+    from script_writer import load_script
+    from thumbnail_generator import generate_thumbnail
+
+    script_path = os.path.join(OUTPUT_DIR, "script.json")
+    title, scenes, full_narration = load_script(script_path)
+
+    with open(script_path) as f:
+        script_json = json.load(f)
+    thumbnail_data = script_json.get("thumbnail", {})
+    thumbnail_path = os.path.join(OUTPUT_DIR, "thumbnail.png")
+    generate_thumbnail(thumbnail_data, title, thumbnail_path)
+
+    result = {"thumbnail_path": thumbnail_path, "layout": thumbnail_data.get("layout", "hero_right"),
+              "headline": thumbnail_data.get("headline", title[:40])}
+    print(json.dumps(result))
+    return result
+
+
 def run_frames_and_assembly():
     """Step 7: Build frames + assemble video. Prints video path."""
     from script_writer import load_script
@@ -149,11 +169,19 @@ def store_and_email(qa_report=""):
     )
     update_video_status(video_id, "pending_review")
 
+    # Read tunnel URL if available (set by scheduler's Cloudflare tunnel)
+    tunnel_url_file = os.path.join(OUTPUT_DIR, "tunnel_url.txt")
+    base_url = None
+    if os.path.isfile(tunnel_url_file):
+        with open(tunnel_url_file) as f:
+            base_url = f.read().strip() or None
+
     send_review_email(
         video_id=video_id, title=title, topic="",
         script_summary=full_narration[:500], qa_report=qa_report,
         thumbnail_path=thumbnail_path if os.path.exists(thumbnail_path) else None,
         video_path=video_path,
+        base_url=base_url,
     )
     print(f"Video ID: {video_id}, status: pending_review, email sent.")
     return video_id

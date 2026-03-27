@@ -60,7 +60,8 @@ def _send_email(subject, html_body, attachments=None):
 
 
 def send_review_email(video_id, title, topic, description="", script_summary="",
-                      qa_report="", thumbnail_path=None, video_path=None):
+                      qa_report="", thumbnail_path=None, video_path=None,
+                      base_url=None):
     """Send a pre-publish review email with inline thumbnail, video link, QA report,
     and approve/reject buttons.
 
@@ -72,20 +73,36 @@ def send_review_email(video_id, title, topic, description="", script_summary="",
         script_summary: First ~500 chars of the script narration.
         qa_report: QA report string (pass/fail details).
         thumbnail_path: Path to thumbnail image (embedded inline via CID).
-        video_path: Path to the video file (shown as clickable local link).
+        video_path: Path to the video file (uploaded to Gofile for public link).
+        base_url: Public base URL for approve/reject buttons (default: localhost:5555).
     """
     summary = (script_summary or "")[:500]
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    approve_base = base_url or "http://localhost:5555"
 
-    # Build video file link
+    # Upload video to Gofile for public link
     video_link_html = ""
     if video_path and os.path.isfile(video_path):
-        abs_video = os.path.abspath(video_path).replace("\\", "/")
-        video_link_html = f"""
-        <tr><td style="padding:8px;font-weight:bold;color:#555;">Video File</td>
-            <td style="padding:8px;"><a href="file:///{abs_video}"
-                style="color:#3b82f6;text-decoration:underline;">{os.path.basename(video_path)}</a></td></tr>
-        """
+        try:
+            from video_uploader_gofile import upload_to_gofile
+            gofile_url = upload_to_gofile(video_path)
+        except Exception as e:
+            print(f"[email_notifier] Gofile upload failed: {e}")
+            gofile_url = None
+
+        if gofile_url:
+            video_link_html = f"""
+            <tr><td style="padding:8px;font-weight:bold;color:#555;">Watch Video</td>
+                <td style="padding:8px;"><a href="{gofile_url}"
+                    style="color:#3b82f6;text-decoration:underline;font-weight:bold;">Watch on Gofile</a></td></tr>
+            """
+        else:
+            abs_video = os.path.abspath(video_path).replace("\\", "/")
+            video_link_html = f"""
+            <tr><td style="padding:8px;font-weight:bold;color:#555;">Video File</td>
+                <td style="padding:8px;"><a href="file:///{abs_video}"
+                    style="color:#3b82f6;text-decoration:underline;">{os.path.basename(video_path)}</a> (local only)</td></tr>
+            """
 
     # Inline thumbnail CID reference
     has_thumbnail = thumbnail_path and os.path.isfile(thumbnail_path)
@@ -137,19 +154,19 @@ def send_review_email(video_id, title, topic, description="", script_summary="",
         </p>
         {qa_html}
         <div style="text-align:center;margin:24px 0;">
-            <a href="http://localhost:5555/approve/{video_id}"
+            <a href="{approve_base}/approve/{video_id}"
                style="display:inline-block;padding:12px 32px;background:#22c55e;color:#fff;
                       text-decoration:none;border-radius:6px;font-weight:bold;font-size:16px;
                       margin-right:16px;">
                 APPROVE
             </a>
-            <a href="http://localhost:5555/reject/{video_id}"
+            <a href="{approve_base}/reject/{video_id}"
                style="display:inline-block;padding:12px 32px;background:#ef4444;color:#fff;
                       text-decoration:none;border-radius:6px;font-weight:bold;font-size:16px;">
                 REJECT
             </a>
         </div>
-        <p style="color:#999;font-size:12px;">Buttons connect to the local scheduler on port 5555.</p>
+        <p style="color:#999;font-size:12px;">Approve/reject via: {approve_base}</p>
     </div>
     """
 
