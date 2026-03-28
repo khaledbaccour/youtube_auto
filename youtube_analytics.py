@@ -8,7 +8,7 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
-from config import BASE_DIR, YOUTUBE_CHANNEL_ID
+from config import BASE_DIR, SHIREFIP_CHANNEL_ID, LITTLE_MINDS_CHANNEL_ID
 from database import insert_analytics, get_connection, init_db
 
 SCOPES = [
@@ -19,15 +19,32 @@ SCOPES = [
 ]
 # NOTE: Adding new scopes requires deleting the existing token.json
 # so the user re-authenticates with the expanded scope set.
-TOKEN_PATH = os.path.join(BASE_DIR, "token.json")
 CREDENTIALS_PATH = os.path.join(BASE_DIR, "credentials.json")
 
+# Per-channel token files
+TOKEN_PATHS = {
+    "shirefip": os.path.join(BASE_DIR, "token_shirefip.json"),
+    "little_minds": os.path.join(BASE_DIR, "token_little_minds.json"),
+}
+# Legacy fallback
+LEGACY_TOKEN_PATH = os.path.join(BASE_DIR, "token.json")
 
-def authenticate():
-    """OAuth2 flow: load cached token, refresh if expired, or run interactive flow."""
+
+def authenticate(channel="shirefip"):
+    """OAuth2 flow: load cached token, refresh if expired, or run interactive flow.
+
+    Args:
+        channel: "shirefip" or "little_minds"
+    """
+    token_path = TOKEN_PATHS.get(channel, TOKEN_PATHS["shirefip"])
+
+    # Migrate legacy token.json to token_shirefip.json if needed
+    if channel == "shirefip" and not os.path.exists(token_path) and os.path.exists(LEGACY_TOKEN_PATH):
+        os.rename(LEGACY_TOKEN_PATH, token_path)
+
     creds = None
-    if os.path.exists(TOKEN_PATH):
-        creds = Credentials.from_authorized_user_file(TOKEN_PATH, SCOPES)
+    if os.path.exists(token_path):
+        creds = Credentials.from_authorized_user_file(token_path, SCOPES)
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
@@ -37,9 +54,11 @@ def authenticate():
                     f"OAuth credentials file not found at {CREDENTIALS_PATH}. "
                     "Download it from Google Cloud Console."
                 )
+            print(f"Authenticating for channel: {channel}")
+            print(f"Select the '{channel}' channel when prompted in the browser.")
             flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_PATH, SCOPES)
             creds = flow.run_local_server(port=0)
-        with open(TOKEN_PATH, "w") as f:
+        with open(token_path, "w") as f:
             f.write(creds.to_json())
     return creds
 
@@ -54,18 +73,24 @@ def get_analytics_service(creds):
     return build("youtubeAnalytics", "v2", credentials=creds)
 
 
-def list_channel_videos(youtube, max_results=50):
+def get_channel_id(channel="shirefip"):
+    """Get the YouTube channel ID by name."""
+    return {"shirefip": SHIREFIP_CHANNEL_ID, "little_minds": LITTLE_MINDS_CHANNEL_ID}[channel]
+
+
+def list_channel_videos(youtube, max_results=50, channel="shirefip"):
     """Get videos from the channel's uploads playlist.
 
     Returns list of {youtube_video_id, title, published_at}.
     """
+    channel_id = get_channel_id(channel)
     # Get the uploads playlist ID from the channel
     ch_resp = youtube.channels().list(
-        part="contentDetails", id=YOUTUBE_CHANNEL_ID
+        part="contentDetails", id=channel_id
     ).execute()
 
     if not ch_resp.get("items"):
-        print(f"No channel found for ID: {YOUTUBE_CHANNEL_ID}")
+        print(f"No channel found for ID: {channel_id}")
         return []
 
     uploads_id = ch_resp["items"][0]["contentDetails"]["relatedPlaylists"]["uploads"]
@@ -159,17 +184,17 @@ def fetch_retention_data(analytics, video_id):
     return retention
 
 
-def sync_all_analytics():
+def sync_all_analytics(channel="shirefip"):
     """Main entry point: authenticate, list videos, fetch + store analytics."""
     init_db()
 
-    print("Authenticating with YouTube APIs...")
-    creds = authenticate()
+    print(f"Authenticating with YouTube APIs for {channel}...")
+    creds = authenticate(channel)
     youtube = get_youtube_service(creds)
     analytics_svc = get_analytics_service(creds)
 
-    print("Fetching channel videos...")
-    videos = list_channel_videos(youtube)
+    print(f"Fetching {channel} channel videos...")
+    videos = list_channel_videos(youtube, channel=channel)
     print(f"Found {len(videos)} videos.")
 
     end_date = datetime.now().strftime("%Y-%m-%d")

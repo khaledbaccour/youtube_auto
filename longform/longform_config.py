@@ -11,6 +11,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_DIR = os.path.join(BASE_DIR, "output")
 
+# Per-video archive — each completed video gets archived to videos/vN_topic/
+# Previous outputs preserved for analysis. Current run always uses output/.
+CURRENT_VIDEO = "v3"
+VIDEOS_ARCHIVE_DIR = os.path.join(BASE_DIR, "videos")
+
 # Video specs (16:9 landscape)
 WIDTH = 1920
 HEIGHT = 1080
@@ -45,9 +50,11 @@ COLOR_PALETTE = {
 # TTS voice for longform (Cartesia Sonic)
 LONGFORM_VOICE_ID = os.environ.get("LONGFORM_VOICE_ID", "")
 
-# Reference video analysis
-REFERENCE_SCENE_COUNT = 60
-REFERENCE_AVG_SCENE_DURATION_S = 11.4
+# Reference video analysis (v3: mixed image + video, max 6 Veo3 clips)
+REFERENCE_SCENE_COUNT = 41
+REFERENCE_AVG_SCENE_DURATION_S = 16.1
+IMAGE_SCENE_COUNT_TARGET = 35
+VIDEO_SCENE_COUNT_TARGET = 6
 
 # Scene types for visual rotation (never repeat back-to-back)
 SCENE_TYPES = [

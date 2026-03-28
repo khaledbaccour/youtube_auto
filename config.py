@@ -13,7 +13,8 @@ CARTESIA_VOICE_ID = os.environ.get("CARTESIA_VOICE_ID", "")
 SHORTS_VOICE_ID = os.environ.get("SHORTS_VOICE_ID", "")
 
 # YouTube
-YOUTUBE_CHANNEL_ID = os.environ.get("YOUTUBE_CHANNEL_ID", "")
+SHIREFIP_CHANNEL_ID = os.environ.get("SHIREFIP_CHANNEL_ID", "")
+LITTLE_MINDS_CHANNEL_ID = os.environ.get("LITTLE_MINDS_CHANNEL_ID", "")
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
 

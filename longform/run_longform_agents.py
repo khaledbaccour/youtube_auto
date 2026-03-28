@@ -78,18 +78,26 @@ def validate_script():
         if phrase in narration_lower:
             issues.append(f"Use contraction instead of '{phrase.strip()}'")
 
-    # Scene count check (target: 60 scenes matching reference video)
-    if len(scenes) < 50:
-        issues.append(f"Too few scenes: {len(scenes)} (target ~60 matching reference video)")
-    elif len(scenes) > 70:
-        issues.append(f"Too many scenes: {len(scenes)} (target ~60 matching reference video)")
+    # Scene count check (target: 36-46 scenes, mixed image + video)
+    if len(scenes) < 36:
+        issues.append(f"Too few scenes: {len(scenes)} (target 36-46)")
+    elif len(scenes) > 46:
+        issues.append(f"Too many scenes: {len(scenes)} (target 36-46)")
 
-    # Visual type check
+    # Video scene count check (target: 4-6 video scenes, max 6 Veo3 clips)
+    video_scenes = [s for s in scenes if s.get("visual_type") == "video_scene"]
+    if len(video_scenes) < 4:
+        issues.append(f"Too few video scenes: {len(video_scenes)} (target 4-6, minimum 4)")
+    elif len(video_scenes) > 6:
+        issues.append(f"Too many video scenes: {len(video_scenes)} (target 4-6, maximum 6)")
+
+    # Visual type check (supports mixed image + video pipeline)
     valid_types = {"fullscreen_image", "image_scene", "video_scene"}
     for scene in scenes:
         vt = scene.get("visual_type", "")
         if vt not in valid_types:
-            issues.append(f"Scene {scene.get('scene_id')}: invalid visual_type '{vt}'")
+            issues.append(f"Scene {scene.get('scene_id')}: invalid visual_type '{vt}'"
+                          f" (valid: {', '.join(valid_types)})")
 
     # Check scene narrations are substrings of full_narration
     for scene in scenes:
@@ -138,18 +146,43 @@ def validate_scene_prompts():
     issues = []
     scenes = data.get("scenes", [])
 
+    video_scene_count = 0
+    image_scene_count = 0
+
     for scene in scenes:
         sid = scene.get("scene_id", "?")
         img_prompt = scene.get("image_prompt", "").lower()
         vid_prompt = scene.get("video_prompt", "").lower()
         style = scene.get("style", "").lower()
         category = scene.get("scene_category", "")
+        vtype = scene.get("visual_type", "image")
 
-        # Must include cartoon style keywords
+        # Count scene types
+        if vtype == "video":
+            video_scene_count += 1
+        else:
+            image_scene_count += 1
+
+        # Must include cartoon style keywords in image_prompt
         cartoon_keywords = ["cartoon", "illustration", "pastel"]
         has_cartoon = any(kw in img_prompt or kw in style for kw in cartoon_keywords)
         if not has_cartoon:
             issues.append(f"Scene {sid}: image_prompt missing cartoon/illustration style keywords")
+
+        # Video scenes must have non-empty video_prompt
+        if vtype == "video" and not vid_prompt.strip():
+            issues.append(f"Scene {sid}: video scene missing video_prompt")
+
+        # Video prompts should include animation style keywords
+        if vtype == "video" and vid_prompt.strip():
+            anim_keywords = ["animation", "cartoon", "animated"]
+            has_anim = any(kw in vid_prompt for kw in anim_keywords)
+            if not has_anim:
+                issues.append(f"Scene {sid}: video_prompt missing animation style keywords")
+
+        # Image scenes must have non-empty image_prompt
+        if vtype == "image" and not img_prompt.strip():
+            issues.append(f"Scene {sid}: image scene missing image_prompt")
 
         # Must not be photorealistic
         bad_keywords = ["photorealistic", "photograph", "stock photo", "dark theme", "black background", "neon"]
@@ -182,11 +215,19 @@ def validate_scene_prompts():
     elif total_dur > 720:
         issues.append(f"Total duration too long: {total_dur}s (target ~660s)")
 
+    # Video scene count check (target: 4-6 video scenes, max 6 Veo3 clips)
+    if video_scene_count < 4:
+        issues.append(f"Too few video scenes: {video_scene_count} (target 4-6, minimum 4)")
+    elif video_scene_count > 6:
+        issues.append(f"Too many video scenes: {video_scene_count} (target 4-6, maximum 6)")
+
     is_valid = len(issues) == 0
     result = {
         "success": is_valid,
         "issues": issues,
         "scene_count": len(scenes),
+        "image_scenes": image_scene_count,
+        "video_scenes": video_scene_count,
         "total_duration_s": total_dur,
     }
     print(json.dumps(result, indent=2))

@@ -237,6 +237,7 @@ def assemble_video(scene_durations, audio_path, output_path=None):
             "ffmpeg", "-y",
             "-i", img_path,
             "-vf", (
+                f"scale=8000:-1,"
                 f"zoompan=z='min(zoom+{zoom_increment:.8f},{ZOOM_RATIO})':"
                 f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
                 f"d={total_frames}:s=1920x1080:fps=30,"

@@ -5,6 +5,7 @@ __pycache__/
 *.pyc
 *.pyo
 token.json
+token_*.json
 credentials.json
 *.db
 scheduler_state.json
@@ -12,3 +13,4 @@ scheduler_state.json
 .playwright-mcp/
 node_modules/
 videoTEMP_MPY_*
+longform/videos/

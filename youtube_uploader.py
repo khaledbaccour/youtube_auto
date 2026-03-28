@@ -10,7 +10,7 @@ from database import update_video_youtube_id, update_video_status, get_video
 
 
 def upload_video(video_id, video_path, title, description="", tags=None,
-                 thumbnail_path=None, privacy="public"):
+                 thumbnail_path=None, privacy="public", channel="shirefip"):
     """Upload video to YouTube via Data API v3.
 
     Args:
@@ -21,10 +21,11 @@ def upload_video(video_id, video_path, title, description="", tags=None,
         tags: list of tag strings
         thumbnail_path: path to thumbnail image
         privacy: "public", "unlisted", or "private"
+        channel: "shirefip" or "little_minds"
 
     Returns: youtube_video_id string
     """
-    creds = authenticate()
+    creds = authenticate(channel)
     youtube = build("youtube", "v3", credentials=creds)
 
     body = {
